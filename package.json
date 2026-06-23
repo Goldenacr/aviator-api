@@ -1,7 +1,6 @@
 {
   "name": "aviator-api",
   "version": "1.0.0",
-  "description": "CIPHERTECH Aviator API",
   "main": "api-aviator.js",
   "scripts": {
     "start": "node api-aviator.js"
@@ -9,5 +8,6 @@
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5"
-  }
+  },
+  "license": "MIT"
 }
