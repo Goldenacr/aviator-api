@@ -155,7 +155,7 @@ app.post('/game/start', (req, res) => {
         history: []
     };
     
-    // Auto-start after 10 seconds
+    // Auto-start after 60 seconds
     setTimeout(() => {
         if (!currentGame || currentGame.status !== 'starting') return;
         currentGame.status = 'active';
@@ -181,11 +181,11 @@ app.post('/game/start', (req, res) => {
                 save(path.join(DATA_DIR, 'aviator_game_history.json'), history);
                 clearInterval(loop);
                 
-                // Auto-reset after 10 seconds
-                setTimeout(() => { currentGame = null; }, 10000);
+                // Auto-reset after 60 seconds
+                setTimeout(() => { currentGame = null; }, 60000);
             }
         }, 200);
-    }, 10000);
+    }, 60000);
     
     res.json({ success: true, game: currentGame });
 });
