@@ -1,128 +1,166 @@
 const express = require('express');
-const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
+const { MongoClient } = require('mongodb');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
 
-const DATA_DIR = path.join(__dirname, 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+const MONGO_URI = 'mongodb+srv://richvybs18:Fuckyou2026%24@cluster0.cq4ddne.mongodb.net/?appName=Cluster0';
+const DB_NAME = 'aviator';
+let db;
 
-const PLAYERS_FILE = path.join(DATA_DIR, 'aviator_players.json');
-const LOANS_FILE = path.join(DATA_DIR, 'aviator_loans.json');
-const REVENUE_FILE = path.join(DATA_DIR, 'aviator_revenue.json');
+async function connectDB() {
+    try {
+        const client = new MongoClient(MONGO_URI);
+        await client.connect();
+        db = client.db(DB_NAME);
+        console.log('✅ MongoDB Connected - Aviator API');
+    } catch (e) {
+        console.error('MongoDB connection error:', e.message);
+    }
+}
+connectDB();
 
-function load(f) { try { if (fs.existsSync(f)) return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) {} return {}; }
-function save(f, d) { fs.writeFileSync(f, JSON.stringify(d, null, 2)); }
+function playersCol() { return db?.collection('players'); }
+function loansCol() { return db?.collection('loans'); }
+function depositsCol() { return db?.collection('deposits'); }
+function revenueCol() { return db?.collection('revenue'); }
+function gameHistoryCol() { return db?.collection('game_history'); }
 
 // ======================== PLAYERS ========================
-app.get('/players', (req, res) => {
-    const players = load(PLAYERS_FILE);
-    res.json({ success: true, players, total: Object.keys(players).length });
+app.get('/players', async (req, res) => {
+    try {
+        const col = playersCol();
+        if (!col) return res.json({ success: true, players: {}, total: 0 });
+        const players = await col.find({}).toArray();
+        const result = {};
+        players.forEach(p => { result[p.jid] = p; delete result[p.jid]._id; });
+        res.json({ success: true, players: result, total: players.length });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-app.post('/players/sync', (req, res) => {
-    const { player, botId } = req.body;
-    if (!player) return res.status(400).json({ success: false, error: 'No player data' });
-    
-    const players = load(PLAYERS_FILE);
-    players[player.jid] = { ...player, botId, syncedAt: Date.now() };
-    save(PLAYERS_FILE, players);
-    
-    res.json({ success: true, id: player.id });
+app.post('/players/sync', async (req, res) => {
+    try {
+        const { player, botId } = req.body;
+        if (!player?.jid) return res.status(400).json({ success: false });
+        player.botId = botId;
+        player.syncedAt = Date.now();
+        const col = playersCol();
+        if (col) await col.updateOne({ jid: player.jid }, { $set: player }, { upsert: true });
+        res.json({ success: true, id: player.id });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
 // ======================== LOANS ========================
-app.get('/loans', (req, res) => {
-    const loans = load(LOANS_FILE);
-    res.json({ success: true, loans, total: Object.keys(loans).length });
+app.get('/loans', async (req, res) => {
+    try {
+        const col = loansCol();
+        if (!col) return res.json({ success: true, loans: {}, total: 0 });
+        const loans = await col.find({}).toArray();
+        const result = {};
+        loans.forEach(l => { result[l.id] = l; delete result[l.id]._id; });
+        res.json({ success: true, loans: result, total: loans.length });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-app.post('/loans/broadcast', (req, res) => {
-    const { loan, botId } = req.body;
-    if (!loan) return res.status(400).json({ success: false, error: 'No loan data' });
-    
-    const loans = load(LOANS_FILE);
-    loans[loan.id] = { ...loan, botId, broadcastAt: Date.now() };
-    save(LOANS_FILE, loans);
-    
-    res.json({ success: true, loanId: loan.id, message: 'Broadcast to super owners' });
+app.post('/loans/broadcast', async (req, res) => {
+    try {
+        const { loan, botId } = req.body;
+        if (!loan?.id) return res.status(400).json({ success: false });
+        loan.botId = botId;
+        loan.broadcastAt = Date.now();
+        const col = loansCol();
+        if (col) await col.updateOne({ id: loan.id }, { $set: loan }, { upsert: true });
+        res.json({ success: true, loanId: loan.id });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-app.post('/loans/update', (req, res) => {
-    const { loanId, updates } = req.body;
-    const loans = load(LOANS_FILE);
-    if (!loans[loanId]) return res.status(404).json({ success: false });
-    
-    Object.assign(loans[loanId], updates);
-    save(LOANS_FILE, loans);
-    res.json({ success: true });
+app.post('/loans/update', async (req, res) => {
+    try {
+        const { loanId, updates } = req.body;
+        const col = loansCol();
+        if (col) await col.updateOne({ id: loanId }, { $set: updates });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
 // ======================== DEPOSITS ========================
-app.get('/deposits', (req, res) => {
-    const deposits = load(path.join(DATA_DIR, 'aviator_deposits.json'));
-    res.json({ success: true, deposits });
+app.get('/deposits', async (req, res) => {
+    try {
+        const col = depositsCol();
+        if (!col) return res.json({ success: true, deposits: {} });
+        const deposits = await col.find({}).toArray();
+        const result = {};
+        deposits.forEach(d => { result[d.id] = d; delete result[d.id]._id; });
+        res.json({ success: true, deposits: result });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-app.post('/deposits/broadcast', (req, res) => {
-    const { deposit, botId } = req.body;
-    const deposits = load(path.join(DATA_DIR, 'aviator_deposits.json'));
-    deposits[deposit.id] = { ...deposit, botId, broadcastAt: Date.now() };
-    save(path.join(DATA_DIR, 'aviator_deposits.json'), deposits);
-    res.json({ success: true });
+app.post('/deposits/broadcast', async (req, res) => {
+    try {
+        const { deposit, botId } = req.body;
+        if (!deposit?.id) return res.status(400).json({ success: false });
+        deposit.botId = botId;
+        const col = depositsCol();
+        if (col) await col.updateOne({ id: deposit.id }, { $set: deposit }, { upsert: true });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-app.post('/deposits/update', (req, res) => {
-    const { depositId, updates } = req.body;
-    const deposits = load(path.join(DATA_DIR, 'aviator_deposits.json'));
-    if (!deposits[depositId]) return res.status(404).json({ success: false });
-    Object.assign(deposits[depositId], updates);
-    save(path.join(DATA_DIR, 'aviator_deposits.json'), deposits);
-    res.json({ success: true });
+app.post('/deposits/update', async (req, res) => {
+    try {
+        const { depositId, updates } = req.body;
+        const col = depositsCol();
+        if (col) await col.updateOne({ id: depositId }, { $set: updates });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
 // ======================== REVENUE ========================
-app.get('/revenue', (req, res) => {
-    const rev = load(REVENUE_FILE);
-    res.json({ success: true, revenue: rev });
+app.get('/revenue', async (req, res) => {
+    try {
+        const col = revenueCol();
+        if (!col) return res.json({ success: true, revenue: { total: 0 } });
+        const rev = await col.findOne({ type: 'aviator' }) || { total: 0, thisMonth: 0, thisWeek: 0, totalBets: 0 };
+        delete rev._id;
+        res.json({ success: true, revenue: rev });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-app.post('/revenue/update', (req, res) => {
-    const { amount, type } = req.body;
-    const rev = load(REVENUE_FILE);
-    rev.total = (rev.total || 0) + amount;
-    rev[type] = (rev[type] || 0) + amount;
-    rev.history = rev.history || [];
-    rev.history.push({ amount, type, timestamp: Date.now() });
-    save(REVENUE_FILE, rev);
-    res.json({ success: true });
+app.post('/revenue/update', async (req, res) => {
+    try {
+        const { amount, type } = req.body;
+        const col = revenueCol();
+        if (!col) return res.json({ success: true });
+        const existing = await col.findOne({ type: 'aviator' }) || { total: 0, thisMonth: 0, thisWeek: 0, totalBets: 0, history: [] };
+        existing.total = (existing.total || 0) + amount;
+        existing.thisMonth = (existing.thisMonth || 0) + amount;
+        existing.thisWeek = (existing.thisWeek || 0) + amount;
+        existing.totalBets = (existing.totalBets || 0) + 1;
+        existing.history.push({ amount, type, timestamp: Date.now() });
+        await col.updateOne({ type: 'aviator' }, { $set: existing }, { upsert: true });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// ======================== HEALTH ========================
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', service: 'aviator-api', timestamp: Date.now() });
-});
-
-
-// ======================== MULTIPLAYER AVIATOR GAME ========================
+// ======================== MULTIPLAYER GAME ========================
 let currentGame = null;
 
 function generateCrashPoint() {
     const random = Math.random() * 100;
-    let crashPoint;
-    if (random < 40) crashPoint = 1 + (Math.random() * 1);
-    else if (random < 70) crashPoint = 2 + (Math.random() * 3);
-    else if (random < 85) crashPoint = 5 + (Math.random() * 5);
-    else if (random < 94) crashPoint = 10 + (Math.random() * 10);
-    else if (random < 98) crashPoint = 20 + (Math.random() * 30);
-    else if (random < 99.5) crashPoint = 50 + (Math.random() * 150);
-    else if (random < 99.9) crashPoint = 200 + (Math.random() * 800);
-    else crashPoint = 1000 + (Math.random() * 4000);
-    return Number(crashPoint.toFixed(2));
+    let cp;
+    if (random < 40) cp = 1 + (Math.random() * 1);
+    else if (random < 70) cp = 2 + (Math.random() * 3);
+    else if (random < 85) cp = 5 + (Math.random() * 5);
+    else if (random < 94) cp = 10 + (Math.random() * 10);
+    else if (random < 98) cp = 20 + (Math.random() * 30);
+    else if (random < 99.5) cp = 50 + (Math.random() * 150);
+    else if (random < 99.9) cp = 200 + (Math.random() * 800);
+    else cp = 1000 + (Math.random() * 4000);
+    return Number(cp.toFixed(2));
 }
 
 function getIncrement(multiplier) {
@@ -135,53 +173,27 @@ function getIncrement(multiplier) {
     return 2.00 + Math.random() * 8.00;
 }
 
-// POST /game/start - Start a new round
 app.post('/game/start', (req, res) => {
-    if (currentGame && currentGame.status === 'active') {
+    if (currentGame && (currentGame.status === 'active' || currentGame.status === 'starting')) {
         return res.json({ success: false, message: 'Game in progress', game: currentGame });
     }
-    if (currentGame && currentGame.status === 'starting') {
-        return res.json({ success: false, message: 'Countdown in progress', game: currentGame });
-    }
-    
     const crashPoint = generateCrashPoint();
-    currentGame = {
-        id: 'GAME' + Date.now().toString(36).toUpperCase(),
-        crashPoint,
-        multiplier: 1.00,
-        status: 'starting',
-        players: {},
-        startTime: Date.now(),
-        history: []
-    };
+    currentGame = { id: 'GAME' + Date.now().toString(36).toUpperCase(), crashPoint, multiplier: 1.00, status: 'starting', players: {}, startTime: Date.now() };
     
-    // Auto-start after 60 seconds
     setTimeout(() => {
         if (!currentGame || currentGame.status !== 'starting') return;
         currentGame.status = 'active';
-        currentGame.startTime = Date.now();
-        
         let mult = 1.00;
         const loop = setInterval(() => {
             if (!currentGame || currentGame.status !== 'active') { clearInterval(loop); return; }
             mult += getIncrement(mult);
             currentGame.multiplier = Number(mult.toFixed(2));
-            
             if (mult >= currentGame.crashPoint) {
                 currentGame.status = 'crashed';
                 currentGame.multiplier = currentGame.crashPoint;
-                currentGame.crashedAt = Date.now();
-                
-                // Save to history
-                const history = load(path.join(DATA_DIR, 'aviator_game_history.json'));
-                history[currentGame.id] = {
-                    id: currentGame.id, crashPoint: currentGame.crashPoint,
-                    players: currentGame.players, time: Date.now()
-                };
-                save(path.join(DATA_DIR, 'aviator_game_history.json'), history);
+                const col = gameHistoryCol();
+                if (col) col.insertOne({ id: currentGame.id, crashPoint: currentGame.crashPoint, players: currentGame.players, time: Date.now() }).catch(() => {});
                 clearInterval(loop);
-                
-                // Auto-reset after 60 seconds
                 setTimeout(() => { currentGame = null; }, 60000);
             }
         }, 200);
@@ -190,87 +202,63 @@ app.post('/game/start', (req, res) => {
     res.json({ success: true, game: currentGame });
 });
 
-// GET /game/current - Get current game state
 app.get('/game/current', (req, res) => {
-    res.json({
-        success: true,
-        game: currentGame,
-        hasActiveGame: currentGame?.status === 'active' || currentGame?.status === 'starting'
-    });
+    res.json({ success: true, game: currentGame, hasActiveGame: currentGame?.status === 'active' || currentGame?.status === 'starting' });
 });
 
-// POST /game/join - Join current round
 app.post('/game/join', (req, res) => {
-    if (!currentGame || currentGame.status !== 'starting') {
-        return res.json({ success: false, message: 'Cannot join now' });
-    }
-    const { playerId, playerName, bet, botId } = req.body;
-    if (!playerId || !bet) return res.json({ success: false, message: 'Missing data' });
+    if (!currentGame || currentGame.status !== 'starting') return res.json({ success: false, message: 'Cannot join now' });
+    const { playerId, playerName, bet } = req.body;
+    if (!playerId || !bet) return res.json({ success: false });
     if (currentGame.players[playerId]) return res.json({ success: false, message: 'Already joined' });
-    
-    currentGame.players[playerId] = {
-        id: playerId, name: playerName || 'Player',
-        bet: Number(bet), botId: botId || 'unknown',
-        cashedOut: false, cashOutMultiplier: null, joinedAt: 1.00
-    };
-    res.json({ success: true, game: currentGame });
+    currentGame.players[playerId] = { id: playerId, name: playerName || 'Player', bet: Number(bet), cashedOut: false, cashOutMultiplier: null };
+    res.json({ success: true });
 });
 
-// POST /game/cashout - Cash out
 app.post('/game/cashout', (req, res) => {
-    if (!currentGame || currentGame.status !== 'active') {
-        return res.json({ success: false, message: 'No active game' });
-    }
+    if (!currentGame || currentGame.status !== 'active') return res.json({ success: false });
     const { playerId } = req.body;
     const player = currentGame.players[playerId];
-    if (!player) return res.json({ success: false, message: 'Not in game' });
-    if (player.cashedOut) return res.json({ success: false, message: 'Already cashed out' });
-    
+    if (!player || player.cashedOut) return res.json({ success: false });
     player.cashedOut = true;
     player.cashOutMultiplier = currentGame.multiplier;
     player.winAmount = Math.floor(player.bet * currentGame.multiplier);
     res.json({ success: true, player });
 });
 
-// POST /game/forcecrash - Force crash (super owner)
 app.post('/game/forcecrash', (req, res) => {
-    if (!currentGame || currentGame.status !== 'active') {
-        return res.json({ success: false, message: 'No active game' });
-    }
+    if (!currentGame || currentGame.status !== 'active') return res.json({ success: false });
     const { multiplier } = req.body;
     if (!multiplier || multiplier < 1) return res.json({ success: false });
-    
     currentGame.crashPoint = Number(multiplier);
     res.json({ success: true });
 });
 
-// GET /game/history - Last 10 rounds
-app.get('/game/history', (req, res) => {
-    const history = load(path.join(DATA_DIR, 'aviator_game_history.json'));
-    const recent = Object.values(history).slice(-10).reverse();
-    res.json({ success: true, history: recent });
+app.get('/game/history', async (req, res) => {
+    try {
+        const col = gameHistoryCol();
+        if (!col) return res.json({ success: true, history: [] });
+        const history = await col.find({}).sort({ time: -1 }).limit(10).toArray();
+        history.forEach(h => delete h._id);
+        res.json({ success: true, history });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
-// Cleanup old pending loans/deposits every hour
-setInterval(() => {
+// ======================== HEALTH ========================
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', service: 'aviator-api', db: !!db, timestamp: Date.now() });
+});
+
+// Cleanup expired pending items every hour
+setInterval(async () => {
     const now = Date.now();
     const twentyFourHours = 24 * 60 * 60 * 1000;
-    
-    const loans = load(LOANS_FILE);
-    for (const [id, loan] of Object.entries(loans)) {
-        if (loan.status === 'pending' && now - loan.createdAt > twentyFourHours) {
-            delete loans[id];
-        }
-    }
-    save(LOANS_FILE, loans);
-    
-    const deposits = load(path.join(DATA_DIR, 'aviator_deposits.json'));
-    for (const [id, dep] of Object.entries(deposits)) {
-        if (dep.status === 'pending' && now - dep.createdAt > twentyFourHours) {
-            delete deposits[id];
-        }
-    }
-    save(path.join(DATA_DIR, 'aviator_deposits.json'), deposits);
+    try {
+        const lCol = loansCol();
+        if (lCol) await lCol.deleteMany({ status: 'pending', createdAt: { $lt: now - twentyFourHours } });
+        const dCol = depositsCol();
+        if (dCol) await dCol.deleteMany({ status: 'pending', createdAt: { $lt: now - twentyFourHours } });
+    } catch (e) {}
 }, 3600000);
 
 app.listen(PORT, () => console.log(`✈️ Aviator API running on port ${PORT}`));
