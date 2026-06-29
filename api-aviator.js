@@ -150,29 +150,130 @@ app.post('/revenue/update', async (req, res) => {
 // ======================== MULTIPLAYER GAME ========================
 let currentGame = null;
 
+/**
+ * Generate a realistic Aviator-style crash point.
+ * - ~3% instant crashes at 1.00x
+ * - House edge: 1%
+ * - Exponentially decreasing probability for higher multipliers
+ * - Maximum multiplier: 5000x
+ */
 function generateCrashPoint() {
-    const random = Math.random() * 100;
-    let cp;
-    if (random < 40) cp = 1 + (Math.random() * 1);
-    else if (random < 70) cp = 2 + (Math.random() * 3);
-    else if (random < 85) cp = 5 + (Math.random() * 5);
-    else if (random < 94) cp = 10 + (Math.random() * 10);
-    else if (random < 98) cp = 20 + (Math.random() * 30);
-    else if (random < 99.5) cp = 50 + (Math.random() * 150);
-    else if (random < 99.9) cp = 200 + (Math.random() * 800);
-    else cp = 1000 + (Math.random() * 4000);
-    return Number(cp.toFixed(2));
+    const HOUSE_EDGE = 0.01;
+    const INSTANT_CRASH = 0.03;
+    const MAX_MULTIPLIER = 5000;
+
+    // Instant crash
+    if (Math.random() < INSTANT_CRASH) {
+        return 1.00;
+    }
+
+    // Uniform random number
+    const r = Math.random();
+
+    // Crash formula
+    let crashPoint = (1 - HOUSE_EDGE) / (1 - r);
+
+    // Cap maximum multiplier
+    crashPoint = Math.min(crashPoint, MAX_MULTIPLIER);
+
+    // Round down to 2 decimals
+    crashPoint = Math.floor(crashPoint * 100) / 100;
+
+    // Safety
+    if (crashPoint < 1.00) crashPoint = 1.00;
+
+    return crashPoint;
 }
 
-function getIncrement(multiplier) {
-    if (multiplier < 2) return 0.05 + Math.random() * 0.15;
-    if (multiplier < 5) return 0.10 + Math.random() * 0.30;
-    if (multiplier < 10) return 0.20 + Math.random() * 0.50;
-    if (multiplier < 25) return 0.30 + Math.random() * 1.00;
-    if (multiplier < 50) return 0.50 + Math.random() * 2.00;
-    if (multiplier < 100) return 1.00 + Math.random() * 4.00;
-    return 2.00 + Math.random() * 8.00;
+/**
+ * Smooth multiplier growth.
+ * Feels much closer to a real Aviator game than random jumps.
+ */
+function getMultiplier(elapsedMs) {
+    const seconds = elapsedMs / 1000;
+
+    // Exponential growth curve
+    const multiplier = Math.exp(0.09 * seconds);
+
+    return Number(multiplier.toFixed(2));
 }
+
+app.post('/game/start', (req, res) => {
+    if (
+        currentGame &&
+        (currentGame.status === 'active' ||
+         currentGame.status === 'starting')
+    ) {
+        return res.json({
+            success: false,
+            message: 'Game in progress',
+            game: currentGame
+        });
+    }
+
+    currentGame = {
+        id: 'GAME' + Date.now().toString(36).toUpperCase(),
+        crashPoint: generateCrashPoint(),
+        multiplier: 1.00,
+        status: 'starting',
+        players: {},
+        startTime: Date.now()
+    };
+
+    // Betting countdown
+    setTimeout(() => {
+
+        if (!currentGame || currentGame.status !== 'starting') return;
+
+        currentGame.status = 'active';
+
+        const gameStart = Date.now();
+
+        const loop = setInterval(() => {
+
+            if (!currentGame || currentGame.status !== 'active') {
+                clearInterval(loop);
+                return;
+            }
+
+            const elapsed = Date.now() - gameStart;
+
+            const multiplier = getMultiplier(elapsed);
+
+            currentGame.multiplier = multiplier;
+
+            if (multiplier >= currentGame.crashPoint) {
+
+                currentGame.status = 'crashed';
+                currentGame.multiplier = currentGame.crashPoint;
+
+                const col = gameHistoryCol();
+
+                if (col) {
+                    col.insertOne({
+                        id: currentGame.id,
+                        crashPoint: currentGame.crashPoint,
+                        players: currentGame.players,
+                        time: Date.now()
+                    }).catch(() => {});
+                }
+
+                clearInterval(loop);
+
+                setTimeout(() => {
+                    currentGame = null;
+                }, 60000);
+            }
+
+        }, 100); // 10 updates per second
+
+    }, 10000); // 10-second betting period
+
+    res.json({
+        success: true,
+        game: currentGame
+    });
+});
 
 app.post('/game/start', (req, res) => {
     if (currentGame && (currentGame.status === 'active' || currentGame.status === 'starting')) {
